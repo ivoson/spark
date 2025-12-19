@@ -159,19 +159,6 @@ private[spark] class Executor(
       None
     }
 
-  if (!isLocal) {
-    env.blockManager.initialize(conf.getAppId)
-    env.metricsSystem.registerSource(executorSource)
-    env.metricsSystem.registerSource(new JVMCPUSource())
-    executorMetricsSource.foreach(_.register(env.metricsSystem))
-    env.metricsSystem.registerSource(env.blockManager.shuffleMetricsSource)
-  } else {
-    // This enable the registration of the executor source in local mode.
-    // The actual registration happens in SparkContext,
-    // it cannot be done here as the appId is not available yet
-    Executor.executorSourceLocalModeOnly = executorSource
-  }
-
   // Whether to load classes in user jars before those in Spark jars
   private val userClassPathFirst = conf.get(EXECUTOR_USER_CLASS_PATH_FIRST_CONFIG)
 
@@ -339,8 +326,6 @@ private[spark] class Executor(
    */
   private var decommissioned = false
 
-  heartbeater.start()
-
   private val appStartTime = conf.getLong("spark.app.startTime", 0)
 
   // To allow users to distribute plugins and their required files
@@ -360,19 +345,31 @@ private[spark] class Executor(
   // Plugins and shuffle managers need to load using a class loader that includes the executor's
   // user classpath. Plugins also needs to be initialized after the heartbeater started
   // to avoid blocking to send heartbeat (see SPARK-32175 and SPARK-45762).
-  private val plugins: Option[PluginContainer] =
-    Utils.withContextClassLoader(defaultSessionState.replClassLoader) {
-      PluginContainer(env, resources.asJava)
-    }
-
-  // Skip local mode because the ShuffleManager is already initialized
   if (!isLocal) {
     Utils.withContextClassLoader(defaultSessionState.replClassLoader) {
       env.initializeShuffleManager()
     }
+    // Initialize BlockManager after ShuffleManager to avoid `shuffleManager` in BlockManager to be
+    // null since shuffle migration may be requested right after the BlockManager is initialized.
+    env.blockManager.initialize(conf.getAppId)
+    env.metricsSystem.registerSource(executorSource)
+    env.metricsSystem.registerSource(new JVMCPUSource())
+    executorMetricsSource.foreach(_.register(env.metricsSystem))
+    env.metricsSystem.registerSource(env.blockManager.shuffleMetricsSource)
+  } else {
+    // This enable the registration of the executor source in local mode.
+    // The actual registration happens in SparkContext,
+    // it cannot be done here as the appId is not available yet
+    Executor.executorSourceLocalModeOnly = executorSource
   }
 
+  heartbeater.start()
   metricsPoller.start()
+
+  private val plugins: Option[PluginContainer] =
+    Utils.withContextClassLoader(defaultSessionState.replClassLoader) {
+      PluginContainer(env, resources.asJava)
+    }
 
   private[executor] def numRunningTasks: Int = runningTasks.size()
 

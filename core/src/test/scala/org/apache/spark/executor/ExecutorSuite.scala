@@ -53,7 +53,7 @@ import org.apache.spark.resource.ResourceInformation
 import org.apache.spark.rpc.{RpcEndpointRef, RpcEnv, RpcTimeout}
 import org.apache.spark.scheduler.{DirectTaskResult, FakeTask, ResultTask, Task, TaskDescription}
 import org.apache.spark.serializer.{JavaSerializer, SerializerInstance, SerializerManager}
-import org.apache.spark.shuffle.FetchFailedException
+import org.apache.spark.shuffle.{FetchFailedException, ShuffleManager}
 import org.apache.spark.storage.{BlockManager, BlockManagerId}
 import org.apache.spark.util.{LongAccumulator, SparkUncaughtExceptionHandler, ThreadUtils, UninterruptibleThread, Utils}
 
@@ -649,6 +649,35 @@ class ExecutorSuite extends SparkFunSuite
         threadPoolField.set(executor, originalThreadPool)
       }
     }
+  }
+
+  test("Shuffle manager should be initialized before block manager initialization") {
+    val conf = new SparkConf().set("spark.app.id", "appId")
+    val serializer = new JavaSerializer(conf)
+    val env = createMockEnv(conf, serializer)
+    val blockManager = env.blockManager
+    var shuffleManager: ShuffleManager = null
+    var verified = false
+
+    when(env.shuffleManager).thenAnswer(_ => shuffleManager)
+    when(env.initializeShuffleManager()).thenAnswer { _ =>
+      shuffleManager = mock[ShuffleManager]
+    }
+
+    when(blockManager.initialize(any())).thenAnswer { _ =>
+      // Verify that shuffle manager is initialized
+      assert(env.shuffleManager != null,
+        "Shuffle manager should be initialized before block manager initialization")
+      verified = true
+    }
+
+    new Executor(
+      executorId = "0",
+      executorHostname = "localhost",
+      env = env,
+      isLocal = false,
+      resources = Map.empty)
+    assert(verified, "Block manager initialization was not verified")
   }
 
   private def createMockEnv(conf: SparkConf, serializer: JavaSerializer): SparkEnv = {
